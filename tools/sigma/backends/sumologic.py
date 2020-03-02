@@ -16,9 +16,11 @@
 
 import re
 import sigma
+import json
 from sigma.parser.condition import ConditionOR
+from sigma.parser.modifiers.type import SigmaRegularExpressionModifier
 from .base import SingleTextQueryBackend
-
+from .mixins import RulenameCommentMixin, MultiRuleOutputMixin
 # Sumo specifics
 # https://help.sumologic.com/05Search/Search-Query-Language
 # want _index or _sourceCategory for performance
@@ -28,12 +30,41 @@ from .base import SingleTextQueryBackend
 # For some strings like Windows ProcessCmdline or LogonProcess, it might be good to force case lower and upper as Windows is inconsistent in logs
 
 
-class SumoLogicBackend(SingleTextQueryBackend):
+class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
     """Converts Sigma rule into SumoLogic query"""
     identifier = "sumologic"
     active = True
     config_required = False
     default_config = ["sysmon", "sumologic"]
+    supported_alert_methods = {'email', 'http_post'}
+
+    options = SingleTextQueryBackend.options + (
+        ("alert_methods", "", "Alert method(s) to use when the rule triggers, comma separated. Supported: " + ', '.join(supported_alert_methods), None),
+
+        # Options for Webhook alerting
+        ("webhook_notification", False, "Use webhooks for notification", None),
+        ("webhook_id", None, "Sumologic webhook ID number", None),
+        ("webhook_payload", None, "Sumologic webhook payload", None),
+        ("description_include_rule_metadata", False, "Indicates if the description should contain the metadata about the rule which triggered", None),
+
+
+        # Options for Email alerting
+        ("email_notification", None, "Who to email", None),
+        ("mute_errors", False, "Mute error emails, defaults to False", None),
+
+        # Options for Index override
+        ("index_field", None, "Index field [_index, _sourceCategory, _view]", None),
+
+        # Options for output
+        ("output", "plain", "Output format:  json = to output in Sumologic Content API json format | plain = output query only", None),
+
+        # Other options
+        ("timezone", "Etc/UTC", "Default timezone for search", None),
+        ("itemize_alerts", True, "Send a separate alert for each search result. Default True", None),
+        ("max_itemized_alerts", 50, "Maximum number of alerts to send for each search result. Default 50", None),
+        ("minimum_interval", "15m", "Minimum interval supported for scheduled queries", None),
+
+        )
 
     index_field = "_index"
     reClear = None
@@ -51,30 +82,43 @@ class SumoLogicBackend(SingleTextQueryBackend):
     mapListValueExpression = "%s IN %s"
     interval = None
     logname = None
+    fields = None 
+    aggregates = list() 
 
     def generateAggregation(self, agg):
         # lnx_shell_priv_esc_prep.yml
-        # print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, agg.cond_op))
+        # print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
+
+        # Below we defer output of the actual aggregation commands until the rest of the query is built.  
+        # We do this because aggregation commands like count will cause data to be lost that isn't counted
+        # and we want all search terms/query conditions processed first before we aggregate.
         if agg.groupfield == 'host':
             agg.groupfield = 'hostname'
         if agg.aggfunc_notrans == 'count() by':
             agg.aggfunc_notrans = 'count by'
         if agg.aggfunc == sigma.parser.condition.SigmaAggregationParser.AGGFUNC_NEAR:
-            raise NotImplementedError("The 'near' aggregation operator is not yet implemented for this backend")
             # WIP
             # ex:
             # (QUERY) | timeslice 5m
             # | count_distinct(process) _timeslice,hostname
             # | where _count_distinct > 5
-            # return " | timeslice %s | count_distinct(%s) %s | where _count_distinct > 0" % (self.interval, agg.aggfunc_notrans or "", agg.aggfield or "", agg.groupfield or "")
-            # return " | timeslice %s | count_distinct(%s) %s | where _count_distinct %s %s" % (self.interval, agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
-        if not agg.groupfield:
+            current_agg = " | timeslice %s | count_distinct(%s) %s | where _count_distinct > 0" % (self.interval, agg.current[0], "by _timeslice," + agg.current[0] )
+            self.aggregates.append(current_agg)
+            return ""
+            #return " | timeslice %s | count_distinct(%s) %s | where _count_distinct %s %s" % (self.interval, agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
+        elif not agg.groupfield:
             # return " | %s(%s) | when _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
-            return " | %s %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
+            current_agg = " | %s %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
+            self.aggregates.append(current_agg)
+            return "" 
         elif agg.groupfield:
-            return " | %s by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.groupfield or "", agg.cond_op, agg.condition)
+            current_agg = " | %s by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.groupfield or "", agg.cond_op, agg.condition)
+            self.aggregates.append(current_agg)
+            return "" 
         else:
-            return " | %s(%s) by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
+            current_agg = " | %s(%s) by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
+            self.aggregates.append(current_agg)
+            return "" 
 
     def generateBefore(self, parsed):
         # not required but makes query faster, especially if no FER or _index/_sourceCategory
@@ -83,6 +127,15 @@ class SumoLogicBackend(SingleTextQueryBackend):
         return ""
 
     def generate(self, sigmaparser):
+        rulename = self.getRuleName(sigmaparser)
+        title = sigmaparser.parsedyaml.setdefault("title", "")
+        description = sigmaparser.parsedyaml.setdefault("description", "No Description")
+        false_positives = sigmaparser.parsedyaml.setdefault("falsepositives", "")
+        level = sigmaparser.parsedyaml.setdefault("level", "")
+        rule_tag = sigmaparser.parsedyaml.setdefault("tags", ["NOT-DEF"])
+        # Get time frame if exists
+        interval = sigmaparser.parsedyaml["detection"].setdefault("timeframe", "15m")
+
         try:
             self.product = sigmaparser.parsedyaml['logsource']['product']   # OS or Software
         except KeyError:
@@ -104,6 +157,25 @@ class SumoLogicBackend(SingleTextQueryBackend):
         except:
             pass
 
+        result = ""
+
+        columns = list()
+        try:
+            for field in sigmaparser.parsedyaml["fields"]:
+                mapped = sigmaparser.config.get_fieldmapping(field).resolve_fieldname(field, sigmaparser)
+                if type(mapped) == str:
+                    columns.append(mapped)
+                elif type(mapped) == list:
+                    columns.extend(mapped)
+                else:
+                    raise TypeError("Field mapping must return string or list")
+        except KeyError:    # no 'fields' attribute
+            pass
+
+        if columns:
+            self.fields = " | fields " + ",".join(columns)
+
+
         for parsed in sigmaparser.condparsed:
             query = self.generateQuery(parsed)
             # FIXME! exclude if expression is regexp but anyway, not directly supported.
@@ -113,25 +185,60 @@ class SumoLogicBackend(SingleTextQueryBackend):
             before = self.generateBefore(parsed)
             after = self.generateAfter(parsed)
 
-            result = ""
-            if before is not None:
+            if before is not None and before is not "":
                 result = before
             if query is not None:
-                result += query
+                if result is not "":
+                    result += " OR " + query
+                else:
+                    result = query
             if after is not None:
                 result += after
 
-            # adding parenthesis here in case 2 rules are aggregated together - ex: win_possible_applocker_bypass
-            # but does not work if count, where or other piped statements...
-            if '|' in result:
-                return result
-            else:
-                return "(" + result + ")"
+        self.queries[rulename] = dict()
+        self.queries[rulename]['description'] = description if description else "No Description"
+        self.queries[rulename]['title'] = title
+        self.queries[rulename]['interval'] = self.interval
+
+        # adding parenthesis here in case 2 rules are aggregated together - ex: win_possible_applocker_bypass
+        # but does not work if count, where or other piped statements...
+
+        if '|' in result:
+            self.queries[rulename]['query'] = result
+        else:
+            self.queries[rulename]['query'] = '('+ result + ')'
+
+        # if fields are specified 
+        # output them using the Sumologic 'fields' commmand at the end of the current query
+        # if there are aggregates, dont output this field because it may cause data that is
+        # needed for an aggregation to be lost
+        if self.fields and not self.aggregates:
+            temp = self.queries[rulename]['query'] + self.fields
+            self.queries[rulename]['query'] = temp 
+
+        # if aggregates were specified
+        # output them last in the query because Sumologic aggregates are lossy operations and 
+        # you generally want them toward the end of a query
+        if self.aggregates:
+            # WIP
+            # Consider adding any fields listed in the 'columns' to each 'count by' commands
+
+            # deduplicate any aggregates
+            aggs = list(set(self.aggregates))
+            temp = self.queries[rulename]['query'] + "".join(aggs) 
+            self.queries[rulename]['query'] = temp 
+
+        if self.output != "json":
+            return self.queries[rulename]['query']
+        else:
+            return
+
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # TODO/FIXME! depending on deployment configuration, existing FER must be populate here (or backend config?)
         # aFL = ["EventID"]
+        self.queries = dict()
         aFL = ["_index", "_sourceCategory", "_view", "EventID", "sourcename", "CommandLine", "NewProcessName", "Image", "ParentImage", "ParentCommandLine", "ParentProcessName"]
         for item in self.sigmaconfig.fieldmappings.values():
             if item.target_type is list:
@@ -172,6 +279,9 @@ class SumoLogicBackend(SingleTextQueryBackend):
                 return self.mapExpression % (key, self.cleanValue(value, key))
             elif type(value) is list:
                 return self.generateMapItemListNode(key, value)
+            elif type(value) == SigmaRegularExpressionModifier:
+                regex = str(value)
+                return "| where %s matches /%s/" % (key, self.generateValueNode(regex))
             elif value is None:
                 return self.nullExpression % (key, )
             else:
@@ -207,6 +317,9 @@ class SumoLogicBackend(SingleTextQueryBackend):
                     else:
                         new_value.append(item)
                 return self.generateORNode(new_value)
+            elif type(value) == SigmaRegularExpressionModifier:
+                regex = str(value)
+                return " | where %s matches /%s/" % (key, self.generateValueNode(regex))
             elif value is None:
                 return self.nullExpression % (key, )
             else:
@@ -268,3 +381,109 @@ class SumoLogicBackend(SingleTextQueryBackend):
                     new_value.append(value)
             return "(" + self.orToken.join([self.generateNode(val) for val in new_value]) + ")"
         return "(" + self.orToken.join([self.generateNode(val) for val in node]) + ")"
+
+    def generateScheduleInfo(self, interval):
+        m = re.match("(?i)(\d+)s", interval)
+        if m:
+            interval = self.minimum_interval
+
+        m = re.match("(?i)(\d+)([d|h|m])", interval)
+        if m:
+            integer_interval = m.group(1)
+            interval_type = m.group(2)
+        else:
+            raise NotImplementedError("interval format '%s' not supported.  format: \d[d|h|m]" % interval)
+
+        if interval_type.lower() == "m":
+            if int(integer_interval) < 15:
+                integer_interval = "15"
+            return "0 0/%s * * * ? *" % (integer_interval), "%sMinutes" % integer_interval, "%sm" % integer_interval
+        elif interval_type.lower() == "h":
+            hour= "Hour"
+            if int(integer_interval) > 1 and int(integer_interval) < 24:
+              hour = "Hours"
+            elif integer_interval == "24":
+                return "0 0 12 1/1 * ? *", "1Day", "%sh" % integer_interval
+            return "0 0 0/%s * * ? *" % (integer_interval), "%s%s" % (integer_interval, hour), "%sh" % integer_interval
+        elif interval_type.lower() == "d":
+            return "0 0 12 ? * 1,2,3,4,5,6,7", "1Day", "%sd" % integer_interval
+
+
+    def finalize(self):
+        result = []
+
+        if self.webhook_notification:
+            notification = {
+                "taskType": "WebhookSearchNotificationSyncDefinition",
+                "webhookId": self.webhook_id,
+                "payload": self.webhook_payload,
+                "itemizeAlerts": self.itemize_alerts,
+                "maxItemizedAlerts": self.max_itemized_alerts
+            }
+        elif self.email_notification:
+            notification = {
+                "taskType": "EmailSearchNotificationSyncDefinition",
+                "toList": [
+                    "{to}"
+                ],
+                "subjectTemplate": "Search Results: {{SearchName}}",
+                "includeQuery": True,
+                "includeResultSet": True,
+                "includeHistogram": True,
+                "includeCsvAttachment": True,
+            }
+
+
+        for key, value in self.queries.items():
+            rulename = value['title'].replace('\n','')
+            query = value['query'].replace('\n','')
+            description = value['description'].replace('\n','')
+            interval = value['interval']
+
+            cronExpression, scheduleType, scheduledInterval = self.generateScheduleInfo(interval)
+
+            if self.output == 'json':
+                format_output =  {
+                    "type": "SavedSearchWithScheduleSyncDefinition",
+                    "name": rulename,
+                    "description": description,
+                    "search": {
+                        "queryText": query,
+                        "defaultTimeRange": "-%s" % scheduledInterval,
+                        "byReceiptTime": False,
+                        "viewName": "",
+                        "viewStartTime": "1970-01-01T00:00:00Z",
+                        "queryParameters": [],
+                        "parsingMode": "AutoParse"
+                    },
+                    "searchSchedule": {
+                        "cronExpression": cronExpression,
+                        "displayableTimeRange": "-%s" % scheduledInterval,
+                        "parseableTimeRange": {
+                            "type": "BeginBoundedTimeRange",
+                            "from": {
+                                "relativeTime": "-%s" % scheduledInterval,
+                                "type": "RelativeTimeRangeBoundary"
+                            },
+                            "to": None,
+                        },
+                        "notification": None,
+                        "timeZone": self.timezone,
+                        "threshold": {
+                            "thresholdType": "group",
+                            "operator": "gt",
+                            "count": 0
+                        },
+                        "muteErrorEmails": self.mute_errors,
+                        "scheduleType": scheduleType,
+                        "parameters": []
+                    }
+                }
+                format_output['searchSchedule']['notification'] = notification
+                result.append(json.dumps(format_output, indent=4))
+            elif self.output == 'plain':
+                result.append(query)
+            else:
+                raise NotImplementedError("Output type '%s' not supported" % self.output_type)
+
+        return '\n'.join(result)
