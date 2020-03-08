@@ -15,8 +15,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import re
-import sigma
 import json
+import sigma
 from sigma.parser.condition import ConditionOR
 from sigma.parser.modifiers.type import SigmaRegularExpressionModifier
 from .base import SingleTextQueryBackend
@@ -87,7 +87,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
     def generateAggregation(self, agg):
         # lnx_shell_priv_esc_prep.yml
-        # print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
+        print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
 
         # Below we defer output of the actual aggregation commands until the rest of the query is built.  
         # We do this because aggregation commands like count will cause data to be lost that isn't counted
@@ -95,20 +95,21 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         if agg.groupfield == 'host':
             agg.groupfield = 'hostname'
         if agg.aggfunc_notrans == 'count() by':
-            agg.aggfunc_notrans = 'count by'
+            agg.aggfunc_notrans = 'count'
         if agg.aggfunc == sigma.parser.condition.SigmaAggregationParser.AGGFUNC_NEAR:
+            agg.aggfunc_notrans = 'count'
             # WIP
             # ex:
             # (QUERY) | timeslice 5m
-            # | count_distinct(process) _timeslice,hostname
-            # | where _count_distinct > 5
-            current_agg = " | timeslice %s | count_distinct(%s) %s | where _count_distinct > 0" % (self.interval, agg.current[0], "by _timeslice," + agg.current[0] )
+            # | count by _timeslice,process,hostname
+            # | where _count > 5
+            current_agg = " | timeslice %s | %s by %s | where _count > 0" % (self.interval, agg.aggfunc_notrans, "_timeslice," + agg.current[0] )
             self.aggregates.append(current_agg)
             return ""
             #return " | timeslice %s | count_distinct(%s) %s | where _count_distinct %s %s" % (self.interval, agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
         elif not agg.groupfield:
             # return " | %s(%s) | when _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
-            current_agg = " | %s %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
+            current_agg = " | %s by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
             self.aggregates.append(current_agg)
             return "" 
         elif agg.groupfield:
@@ -133,7 +134,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         false_positives = sigmaparser.parsedyaml.setdefault("falsepositives", "")
         level = sigmaparser.parsedyaml.setdefault("level", "")
         rule_tag = sigmaparser.parsedyaml.setdefault("tags", ["NOT-DEF"])
-        # Get time frame if exists
+        # Get time frame if exists otherwise set it to 15 minutes
         interval = sigmaparser.parsedyaml["detection"].setdefault("timeframe", "15m")
 
         try:
@@ -213,8 +214,8 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         # if there are aggregates, dont output this field because it may cause data that is
         # needed for an aggregation to be lost
         if self.fields and not self.aggregates:
-            temp = self.queries[rulename]['query'] + self.fields
-            self.queries[rulename]['query'] = temp 
+            self.queries[rulename]['query'] = self.queries[rulename]['query'] + self.fields
+            self.fields = None 
 
         # if aggregates were specified
         # output them last in the query because Sumologic aggregates are lossy operations and 
@@ -227,6 +228,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             aggs = list(set(self.aggregates))
             temp = self.queries[rulename]['query'] + "".join(aggs) 
             self.queries[rulename]['query'] = temp 
+            self.aggregates.clear()
 
         if self.output != "json":
             return self.queries[rulename]['query']
@@ -396,6 +398,8 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
         if interval_type.lower() == "m":
             if int(integer_interval) < 15:
+		# minimum Sumologic query interval is 15 minutes
+		# raise anything less than that up to the minimum
                 integer_interval = "15"
             return "0 0/%s * * * ? *" % (integer_interval), "%sMinutes" % integer_interval, "%sm" % integer_interval
         elif interval_type.lower() == "h":
@@ -432,7 +436,6 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                 "includeHistogram": True,
                 "includeCsvAttachment": True,
             }
-
 
         for key, value in self.queries.items():
             rulename = value['title'].replace('\n','')
