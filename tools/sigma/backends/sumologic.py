@@ -52,14 +52,14 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         ("mute_errors", False, "Mute error emails, defaults to False", None),
 
         # Options for Index override
-        ("index_field", None, "Index field [_index, _sourceCategory, _view]", None),
+        ("index_field", "_index", "Index field [_index, _sourceCategory, _view]", None),
 
         # Options for output
         ("output", "plain", "Output format:  json = to output in Sumologic Content API json format | plain = output query only", None),
 
         # Other options
         ("timezone", "Etc/UTC", "Default timezone for search", None),
-        ("itemize_alerts", True, "Send a separate alert for each search result. Default True", None),
+        ("itemize_alerts", False, "Send a separate alert for each search result. Default False", None),
         ("max_itemized_alerts", 50, "Maximum number of alerts to send for each search result. Default 50", None),
         ("minimum_interval", "15m", "Minimum interval supported for scheduled queries", None),
         ("use_fields", False, "Output fields command. Default False", None),
@@ -86,7 +86,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
     def generateAggregation(self, agg):
         # lnx_shell_priv_esc_prep.yml
-        print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
+        #print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
 
         # Below we defer output of the actual aggregation commands until the rest of the query is built.  
         # We do this because aggregation commands like count will cause data to be lost that isn't counted
@@ -127,6 +127,11 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         return ""
 
     def generate(self, sigmaparser):
+        #print(f'DEBUG1 {sigmaparser.parsedyaml}')
+        #print(f'DEBUG2 {sigmaparser.definitions}')
+        #print(f'DEBUG3 {sigmaparser.values}')
+        #print(f'DEBUG4 {sigmaparser.config}')
+        #print(f'DEBUG4 {sigmaparser.config.logsources}')
         rulename = self.getRuleName(sigmaparser)
         title = sigmaparser.parsedyaml.setdefault("title", "")
         description = sigmaparser.parsedyaml.setdefault("description", "No Description")
@@ -135,6 +140,8 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         rule_tag = sigmaparser.parsedyaml.setdefault("tags", ["NOT-DEF"])
         # Get time frame if exists otherwise set it to 15 minutes
         interval = sigmaparser.parsedyaml["detection"].setdefault("timeframe", "15m")
+
+        print(f'DEBUG detection {sigmaparser.parsedyaml["detection"]}')
 
         try:
             self.product = sigmaparser.parsedyaml['logsource']['product']   # OS or Software
@@ -150,6 +157,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             self.category = None
         # FIXME! don't get backend config mapping
         self.indices = sigmaparser.get_logsource().index
+        print(f'DEBUG {self.indices}')
         if len(self.indices) == 0:
             self.indices = None
         try:
