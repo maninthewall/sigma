@@ -86,8 +86,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
     def generateAggregation(self, agg):
         # lnx_shell_priv_esc_prep.yml
-        #print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
-
+        # print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
         # Below we defer output of the actual aggregation commands until the rest of the query is built.  
         # We do this because aggregation commands like count will cause data to be lost that isn't counted
         # and we want all search terms/query conditions processed first before we aggregate.
@@ -112,7 +111,14 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             self.aggregates.append(current_agg)
             return "" 
         elif agg.groupfield:
-            current_agg = " | %s by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.groupfield or "", agg.cond_op, agg.condition)
+            result_field = "_count"
+            if agg.aggfield:
+                func="%s(%s) by %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield)
+            else:
+                func="%s(%s) by %s" % (agg.aggfunc_notrans, agg.groupfield, agg.groupfield)
+            if agg.aggfunc_notrans == "sum":
+                result_field = "_sum"
+            current_agg = " | %s |  where %s %s %s" % (func, result_field, agg.cond_op, agg.condition)
             self.aggregates.append(current_agg)
             return "" 
         else:
@@ -281,7 +287,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                 return self.generateMapItemListNode(key, value)
             elif type(value) == SigmaRegularExpressionModifier:
                 regex = str(value)
-                return "| where %s matches /%s/" % (key, self.generateValueNode(regex))
+                return " where %s matches /%s/" % (key, self.generateValueNode(regex))
             elif value is None:
                 return self.nullExpression % (key, )
             else:
@@ -332,6 +338,9 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
     def cleanValue(self, val, key=''):
         # in sumologic, if key, can use wildcard outside of double quotes. if inside, it's litteral
         if key:
+            # EXPERIMENTAL: if asterisk is all by itself, we can leave it be I think
+            if val == '*':
+                return val
             val = re.sub(r'\"', '\\"', str(val))
             val = re.sub(r'(.+)\*(.+)', '"\g<1>"*"\g<2>"', val, 0)
             val = re.sub(r'^\*', '*"', val)
