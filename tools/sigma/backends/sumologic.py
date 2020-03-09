@@ -127,11 +127,6 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         return ""
 
     def generate(self, sigmaparser):
-        #print(f'DEBUG1 {sigmaparser.parsedyaml}')
-        #print(f'DEBUG2 {sigmaparser.definitions}')
-        #print(f'DEBUG3 {sigmaparser.values}')
-        #print(f'DEBUG4 {sigmaparser.config}')
-        #print(f'DEBUG4 {sigmaparser.config.logsources}')
         rulename = self.getRuleName(sigmaparser)
         title = sigmaparser.parsedyaml.setdefault("title", "")
         description = sigmaparser.parsedyaml.setdefault("description", "No Description")
@@ -140,8 +135,6 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         rule_tag = sigmaparser.parsedyaml.setdefault("tags", ["NOT-DEF"])
         # Get time frame if exists otherwise set it to 15 minutes
         interval = sigmaparser.parsedyaml["detection"].setdefault("timeframe", "15m")
-
-        print(f'DEBUG detection {sigmaparser.parsedyaml["detection"]}')
 
         try:
             self.product = sigmaparser.parsedyaml['logsource']['product']   # OS or Software
@@ -157,7 +150,6 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             self.category = None
         # FIXME! don't get backend config mapping
         self.indices = sigmaparser.get_logsource().index
-        print(f'DEBUG {self.indices}')
         if len(self.indices) == 0:
             self.indices = None
         try:
