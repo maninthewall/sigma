@@ -47,7 +47,6 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         ("webhook_payload", None, "Sumologic webhook payload", None),
         ("description_include_rule_metadata", False, "Indicates if the description should contain the metadata about the rule which triggered", None),
 
-
         # Options for Email alerting
         ("email_notification", None, "Who to email", None),
         ("mute_errors", False, "Mute error emails, defaults to False", None),
@@ -63,7 +62,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         ("itemize_alerts", True, "Send a separate alert for each search result. Default True", None),
         ("max_itemized_alerts", 50, "Maximum number of alerts to send for each search result. Default 50", None),
         ("minimum_interval", "15m", "Minimum interval supported for scheduled queries", None),
-
+        ("use_fields", False, "Output fields command. Default False", None),
         )
 
     index_field = "_index"
@@ -197,6 +196,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                 result += after
 
         self.queries[rulename] = dict()
+        self.queries[rulename]['name'] = rulename 
         self.queries[rulename]['description'] = description if description else "No Description"
         self.queries[rulename]['title'] = title
         self.queries[rulename]['interval'] = self.interval
@@ -213,7 +213,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         # output them using the Sumologic 'fields' commmand at the end of the current query
         # if there are aggregates, dont output this field because it may cause data that is
         # needed for an aggregation to be lost
-        if self.fields and not self.aggregates:
+        if self.use_fields and self.fields and not self.aggregates:
             self.queries[rulename]['query'] = self.queries[rulename]['query'] + self.fields
             self.fields = None 
 
@@ -230,10 +230,8 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             self.queries[rulename]['query'] = temp 
             self.aggregates.clear()
 
-        if self.output != "json":
-            return self.queries[rulename]['query']
-        else:
-            return
+        # We'll output all queries in finalise()
+        return
 
 
     def __init__(self, *args, **kwargs):
@@ -414,7 +412,18 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
 
     def finalize(self):
-        result = []
+        result = list() 
+        titles = set()
+
+        def getTitle(title):
+            title = title.replace('\n','')
+            if title in titles:   # add counter if name collides
+                cnt = 2
+                while "%s-%d" % (title, cnt) in titles:
+                    cnt += 1
+                title = "%s-%d" % (title, cnt)
+            titles.add(title)
+            return title
 
         if self.webhook_notification:
             notification = {
@@ -438,7 +447,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             }
 
         for key, value in self.queries.items():
-            rulename = value['title'].replace('\n','')
+            rulename = getTitle(value['title']) 
             query = value['query'].replace('\n','')
             description = value['description'].replace('\n','')
             interval = value['interval']
