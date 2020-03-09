@@ -307,7 +307,9 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                             return "(" + self.generateANDNode(new_value) + ")"
                         else:
                             # if after cleaning node, it is empty but there is AND statement... make it true.
-                            return "true"
+                            # return "true"
+                            # EXPERIMENTAL return key name in quotes instead, this *may* make better queries
+                            return '"%s"' % key
                     else:
                         return "(" + self.generateORNode(new_value) + ")"
                 else:
