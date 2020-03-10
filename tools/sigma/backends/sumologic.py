@@ -45,23 +45,22 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         ("webhook_notification", False, "Use webhooks for notification", None),
         ("webhook_id", None, "Sumologic webhook ID number", None),
         ("webhook_payload", None, "Sumologic webhook payload", None),
-        ("description_include_rule_metadata", False, "Indicates if the description should contain the metadata about the rule which triggered", None),
 
         # Options for Email alerting
         ("email_notification", None, "Who to email", None),
-        ("mute_errors", False, "Mute error emails, defaults to False", None),
+        ("mute_errors", False, "Mute error emails. Default False", None),
 
         # Options for Index override
-        ("index_field", "_index", "Index field [_index, _sourceCategory, _view]", None),
+        ("index_field", "_index", "Index field [_index, _sourceCategory, _view]. Default _index", None),
 
         # Options for output
-        ("output", "plain", "Output format:  json = to output in Sumologic Content API json format | plain = output query only", None),
+        ("output", "plain", "Output format:  json = to output in Sumologic Content API json format | plain = output query only. Default plain", None),
 
         # Other options
-        ("timezone", "Etc/UTC", "Default timezone for search", None),
+        ("timezone", "Etc/UTC", "Default timezone for search. Default Etc/UTC", None),
         ("itemize_alerts", False, "Send a separate alert for each search result. Default False", None),
         ("max_itemized_alerts", 50, "Maximum number of alerts to send for each search result. Default 50", None),
-        ("minimum_interval", "15m", "Minimum interval supported for scheduled queries", None),
+        ("minimum_interval", "15m", "Minimum interval supported for scheduled queries. Default 15m", None),
         ("use_fields", False, "Output fields command. Default False", None),
         )
 
@@ -81,14 +80,14 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
     mapListValueExpression = "%s IN %s"
     interval = None
     logname = None
-    fields = None 
-    aggregates = list() 
+    fields = None
+    aggregates = list()
     whereClauses = list()
 
     def generateAggregation(self, agg):
         # lnx_shell_priv_esc_prep.yml
         # print("DEBUG generateAggregation(): %s, %s, %s, %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield, str(agg)))
-        # Below we defer output of the actual aggregation commands until the rest of the query is built.  
+        # Below we defer output of the actual aggregation commands until the rest of the query is built.
         # We do this because aggregation commands like count will cause data to be lost that isn't counted
         # and we want all search terms/query conditions processed first before we aggregate.
         if agg.groupfield == 'host':
@@ -103,22 +102,24 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         elif not agg.groupfield:
             current_agg = " | %s by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
             self.aggregates.append(current_agg)
-            return "" 
+            return ""
         elif agg.groupfield:
             result_field = "_count"
             if agg.aggfield:
+                # aggregate by aggfield and group by groupfield
                 func="%s(%s) by %s" % (agg.aggfunc_notrans, agg.aggfield, agg.groupfield)
             else:
+                # aggregate by groupfield and group by groupfield
                 func="%s(%s) by %s" % (agg.aggfunc_notrans, agg.groupfield, agg.groupfield)
             if agg.aggfunc_notrans == "sum":
                 result_field = "_sum"
             current_agg = " | %s |  where %s %s %s" % (func, result_field, agg.cond_op, agg.condition)
             self.aggregates.append(current_agg)
-            return "" 
+            return ""
         else:
             current_agg = " | %s(%s) by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
             self.aggregates.append(current_agg)
-            return "" 
+            return ""
 
     def generateBefore(self, parsed):
         # not required but makes query faster, especially if no FER or _index/_sourceCategory
@@ -159,6 +160,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
         result = ""
 
+        # Build the content for the fields command based on the fields listed in the Rule
         columns = list()
         try:
             for field in sigmaparser.parsedyaml["fields"]:
@@ -172,6 +174,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         except KeyError:    # no 'fields' attribute
             pass
 
+        # Create the fields command for us to potentially append later
         if columns:
             self.fields = " | fields " + ",".join(columns)
 
@@ -180,8 +183,10 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             query = self.generateQuery(parsed)
             # FIXME! exclude if expression is regexp but anyway, not directly supported.
             #   Not doing if aggregation ('| count') or key ('=')
-            if not (query.startswith('"') and query.endswith('"')) and not (query.startswith('(') and query.endswith(')')) and not ('|' in query) and not ('=' in query):
+            if not (query.startswith('"') and query.endswith('"')) and not (query.startswith('(') and \
+               query.endswith(')')) and  not ('|' in query) and not ('=' in query):
                 query = '"%s"' % query
+
             before = self.generateBefore(parsed)
             after = self.generateAfter(parsed)
 
@@ -196,7 +201,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                 result += after
 
         self.queries[rulename] = dict()
-        self.queries[rulename]['name'] = rulename 
+        self.queries[rulename]['name'] = rulename
         self.queries[rulename]['description'] = description if description else "No Description"
         self.queries[rulename]['title'] = title
         self.queries[rulename]['interval'] = self.interval
@@ -209,29 +214,30 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         else:
             self.queries[rulename]['query'] = '('+ result + ')'
 
-        # if fields are specified 
+        # output any "| where" clauses we may have created through regular expressions
+        if self.whereClauses:
+            self.queries[rulename]['query'] = self.queries[rulename]['query'] + " | where " + " OR ".join(self.whereClauses)
+            self.whereClauses.clear()
+
+        # if fields are specified
         # output them using the Sumologic 'fields' commmand at the end of the current query
         # if there are aggregates, dont output this field because it may cause data that is
         # needed for an aggregation to be lost
         if self.use_fields and self.fields and not self.aggregates:
             self.queries[rulename]['query'] = self.queries[rulename]['query'] + self.fields
-            self.fields = None 
-
-        if self.whereClauses:
-            self.queries[rulename]['query'] = self.queries[rulename]['query'] + " | where " + " OR ".join(self.whereClauses)
-            self.whereClauses.clear()
+            self.fields = None
 
         # if aggregates were specified
-        # output them last in the query because Sumologic aggregates are lossy operations and 
+        # output them last in the query because Sumologic aggregates are lossy operations and
         # you generally want them toward the end of a query
         if self.aggregates:
             # WIP
             # Consider adding any fields listed in the 'columns' to each 'count by' commands
-
-            # deduplicate any aggregates
-            aggs = list(set(self.aggregates))
-            temp = self.queries[rulename]['query'] + "".join(aggs) 
-            self.queries[rulename]['query'] = temp 
+            # deduplicate any aggregates and preserve order
+            seen = set()
+            aggs = list(x for x in self.aggregates if not (x in seen or seen.add(x)))
+            temp = self.queries[rulename]['query'] + "".join(aggs)
+            self.queries[rulename]['query'] = temp
             self.aggregates.clear()
 
         # We'll output all queries in finalise()
@@ -345,7 +351,8 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
         return list(regex_strings)
 
     # from mixins.py
-    # input in simple quotes are not passing through this function. ex: rules/windows/sysmon/sysmon_vul_java_remote_debugging.yml, rules/apt/apt_sofacy_zebrocy.yml
+    # input in simple quotes are not passing through this function.
+    # ex: rules/windows/sysmon/sysmon_vul_java_remote_debugging.yml, rules/apt/apt_sofacy_zebrocy.yml
     #   => OK only if field entry with list, not string
     #   => generateNode: call cleanValue
     def cleanValue(self, val, key=''):
@@ -404,6 +411,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             return "(" + self.orToken.join([self.generateNode(val) for val in new_value]) + ")"
         return "(" + self.orToken.join([self.generateNode(val) for val in node]) + ")"
 
+    # generate the schedule information used in the JSON output
     def generateScheduleInfo(self, interval):
         m = re.match("(?i)(\d+)s", interval)
         if m:
@@ -418,8 +426,8 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
         if interval_type.lower() == "m":
             if int(integer_interval) < 15:
-		# minimum Sumologic query interval is 15 minutes
-		# raise anything less than that up to the minimum
+		        # minimum Sumologic query interval is 15 minutes
+		        # raise anything less than that up to the minimum
                 integer_interval = "15"
             return "0 0/%s * * * ? *" % (integer_interval), "%sMinutes" % integer_interval, "%sm" % integer_interval
         elif interval_type.lower() == "h":
@@ -434,9 +442,10 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
 
 
     def finalize(self):
-        result = list() 
+        result = list()
         titles = set()
 
+        # similar to mixins.py method for creating unique rule ids, this time we do it titles
         def getTitle(title):
             title = title.replace('\n','')
             if title in titles:   # add counter if name collides
@@ -469,7 +478,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             }
 
         for key, value in self.queries.items():
-            rulename = getTitle(value['title']) 
+            rulename = getTitle(value['title'])
             query = value['query'].replace('\n','')
             description = value['description'].replace('\n','')
             interval = value['interval']
