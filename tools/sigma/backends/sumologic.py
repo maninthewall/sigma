@@ -83,6 +83,7 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
     logname = None
     fields = None 
     aggregates = list() 
+    whereClauses = list()
 
     def generateAggregation(self, agg):
         # lnx_shell_priv_esc_prep.yml
@@ -96,17 +97,10 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             agg.aggfunc_notrans = 'count'
         if agg.aggfunc == sigma.parser.condition.SigmaAggregationParser.AGGFUNC_NEAR:
             agg.aggfunc_notrans = 'count'
-            # WIP
-            # ex:
-            # (QUERY) | timeslice 5m
-            # | count by _timeslice,process,hostname
-            # | where _count > 5
             current_agg = " | timeslice %s | %s by %s | where _count > 0" % (self.interval, agg.aggfunc_notrans, "_timeslice," + agg.current[0] )
             self.aggregates.append(current_agg)
             return ""
-            #return " | timeslice %s | count_distinct(%s) %s | where _count_distinct %s %s" % (self.interval, agg.aggfunc_notrans, agg.aggfield or "", agg.groupfield or "", agg.cond_op, agg.condition)
         elif not agg.groupfield:
-            # return " | %s(%s) | when _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
             current_agg = " | %s by %s | where _count %s %s" % (agg.aggfunc_notrans, agg.aggfield or "", agg.cond_op, agg.condition)
             self.aggregates.append(current_agg)
             return "" 
@@ -223,6 +217,10 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             self.queries[rulename]['query'] = self.queries[rulename]['query'] + self.fields
             self.fields = None 
 
+        if self.whereClauses:
+            self.queries[rulename]['query'] = self.queries[rulename]['query'] + " | where " + " OR ".join(self.whereClauses)
+            self.whereClauses.clear()
+
         # if aggregates were specified
         # output them last in the query because Sumologic aggregates are lossy operations and 
         # you generally want them toward the end of a query
@@ -287,7 +285,10 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                 return self.generateMapItemListNode(key, value)
             elif type(value) == SigmaRegularExpressionModifier:
                 regex = str(value)
-                return " where %s matches /%s/" % (key, self.generateValueNode(regex))
+                clause = "%s matches /%s/" % (key, self.generateValueNode(regex))
+                self.whereClauses.append(clause)
+                tokens = self.stripRegex(regex)
+                return self.generateORNode(tokens)
             elif value is None:
                 return self.nullExpression % (key, )
             else:
@@ -327,11 +328,21 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
                 return self.generateORNode(new_value)
             elif type(value) == SigmaRegularExpressionModifier:
                 regex = str(value)
-                return " | where %s matches /%s/" % (key, self.generateValueNode(regex))
+                clause = "%s matches /%s/" % (key, self.generateValueNode(regex))
+                self.whereClauses.append(clause)
+                tokens = self.stripRegex(regex)
+                return self.generateORNode(tokens)
             elif value is None:
                 return self.nullExpression % (key, )
             else:
                 raise TypeError("Backend does not support map values of type " + str(type(value)))
+
+    def stripRegex(self, regex):
+        regex_strings = set()
+        for t in re.findall("[A-Z]{2,}(?![a-zA-Z])|[A-Z][a-zA-Z]+|[\'\w\:\$]+", regex):
+            if len(t) > 2:
+                regex_strings.add(t)
+        return list(regex_strings)
 
     # from mixins.py
     # input in simple quotes are not passing through this function. ex: rules/windows/sysmon/sysmon_vul_java_remote_debugging.yml, rules/apt/apt_sofacy_zebrocy.yml
