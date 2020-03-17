@@ -1,0 +1,8 @@
+index_field: _sourceCategory
+output: json
+webhook_notification: True
+timezone: Etc/UTC
+webhook_id: 0000000000000001
+webhook_payload: '{ "attachments": [ { "pretext": "Sumo Logic Alert: *{{SearchName}}*", "fields": [ { "title": "Description", "value": "{{SearchDescription}}" }, { "title": "Query", "value": "<{{SearchQueryUrl}}|{{SearchName}}>" }, { "title": "Message", "value": "{{AggregateResultsJson}}" }, { "title": "Time Range", "value": "{{TimeRange}}" } ], "mrkdwn_in": ["text", "pretext"], "color": "#29A1E6" } ] }'
+max_itemized_alerts: 1 
+itemize_alerts: False 
