@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+*_test*
+gen_sumo_test.sh
+
 # Distribution / packaging
 .Python
 env/
