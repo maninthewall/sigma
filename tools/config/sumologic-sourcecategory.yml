@@ -31,10 +31,12 @@ logsources:
     product: linux
     service: clamav
     index: LINUX
-  windows:
-    product: windows
-    conditions:
-      _sourceCategory: windows/events
+ # Using this and other sourceCategory conditions will generate queries that 'AND' two sourceCategories together
+ # This is probably not desirable.  Uncomment below if it is inded desirable
+ #windows:
+    #product: windows
+    #conditions:
+    #  _sourceCategory: windows/events
   windows-sysmon:
     product: windows
     service: sysmon
