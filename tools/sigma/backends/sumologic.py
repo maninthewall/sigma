@@ -100,44 +100,68 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
             agg.aggfunc_notrans = 'count by'
         if agg.aggfunc == SigmaAggregationParser.AGGFUNC_NEAR:
             raise NotImplementedError("The 'near' aggregation operator is not yet implemented for this backend")
+            #agg.aggfunc_notrans = 'count'
+            #current_agg = " | timeslice %s | %s by %s | where _count > 0" % (self.interval, agg.aggfunc_notrans, "_timeslice," + agg.current[0] )
+            #self.aggregates.append(current_agg)
+            #return ""
         if self.keypresent:
             if not agg.groupfield:
                 if agg.aggfield:
                     agg.aggfunc_notrans = "count_distinct"
-                    return " \n| %s(%s) \n| where _count_distinct %s %s" % (
+                    current_agg =  " \n| %s(%s) \n| where _count_distinct %s %s" % (
                         agg.aggfunc_notrans, agg.aggfield, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
                 else:
-                    return "  \n| %s | where _count %s %s" % (
-                    agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    current_agg = "  \n| %s | where _count %s %s" % (
+                        agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
             elif agg.groupfield:
                 if agg.aggfield:
                     agg.aggfunc_notrans = "count_distinct"
-                    return " \n| %s(%s) by %s \n| where _count_distinct %s %s" % (
+                    current_agg = " \n| %s(%s) by %s \n| where _count_distinct %s %s" % (
                         agg.aggfunc_notrans, agg.aggfield, agg.groupfield, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
                 else:
-                    return " \n| %s by %s \n| where _count %s %s" % (
+                    current_agg = " \n| %s by %s \n| where _count %s %s" % (
                         agg.aggfunc_notrans, agg.groupfield, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
             else:
-                return " \n| %s | where _count %s %s" % (agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                current_agg = " \n| %s | where _count %s %s" % (agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                self.aggregates.append(current_agg)
+                return ""
         else:
             if not agg.groupfield:
                 if agg.aggfield:
                     agg.aggfunc_notrans = "count_distinct"
                     return " \n| parse \"[%s=*]\" as searched nodrop\n| %s(searched) \n| where _count_distinct %s %s" % (
                         agg.aggfield, agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
                 else:
-                    return " \n| %s | where _count %s %s" % (
-                    agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    current_agg = " \n| %s | where _count %s %s" % (
+                        agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
             elif agg.groupfield:
                 if agg.aggfield:
                     agg.aggfunc_notrans = "count_distinct"
-                    return " \n| parse \"[%s=*]\" as searched nodrop\n| parse \"[%s=*]\" as grpd nodrop\n| %s(searched) by grpd \n| where _count_distinct %s %s" % (
+                    current_agg = " \n| parse \"[%s=*]\" as searched nodrop\n| parse \"[%s=*]\" as grpd nodrop\n| %s(searched) by grpd \n| where _count_distinct %s %s" % (
                         agg.aggfield, agg.groupfield, agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
                 else:
-                    return " \n| parse \"[%s=*]\" as grpd nodrop\n| %s by grpd \n| where _count %s %s" % (
+                    current_agg = " \n| parse \"[%s=*]\" as grpd nodrop\n| %s by grpd \n| where _count %s %s" % (
                         agg.groupfield, agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                    self.aggregates.append(current_agg)
+                    return ""
             else:
-                return " \n| %s | where _count %s %s" % (agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                current_agg = " \n| %s | where _count %s %s" % (agg.aggfunc_notrans, agg.cond_op, agg.condition)
+                self.aggregates.append(current_agg)
+                return ""
 
     def generateBefore(self, parsed):
         # not required but makes query faster, especially if no FER or _index/_sourceCategory
@@ -383,27 +407,6 @@ class SumoLogicBackend(SingleTextQueryBackend, MultiRuleOutputMixin):
     #   => OK only if field entry with list, not string
     #   => generateNode: call cleanValue
     def cleanValue(self, val, key=''):
-        # in sumologic, if key, can use wildcard outside of double quotes. if inside, it's litteral
-        if key:
-            # EXPERIMENTAL: if asterisk is all by itself, we can leave it be I think
-            if val == '*':
-                return val
-            val = re.sub(r'\"', '\\"', str(val))
-            val = re.sub(r'(.+)\*(.+)', '"\g<1>"*"\g<2>"', val, 0)
-            val = re.sub(r'^\*', '*"', val)
-            val = re.sub(r'\*$', '"*', val)
-            # if unbalanced wildcard?
-            if val.startswith('*"') and not (val.endswith('"*') or val.endswith('"')):
-                val = val + '"'
-            if val.endswith('"*') and not (val.startswith('*"') or val.startswith('"')):
-                val = '"' + val
-            # double escape if end quote
-            if val.endswith('\\"*') and not val.endswith('\\\\"*'):
-                val = re.sub(r'\\"\*$', '\\\\\\"*', val)
-        # if not key and not (val.startswith('"') and val.endswith('"')) and not (val.startswith('(') and val.endswith(')')) and not ('|' in val) and val:
-        # apt_babyshark.yml
-        if not (val.startswith('"') and val.endswith('"')) and not (val.startswith('(') and val.endswith(')')) and not ('|' in val) and not ('*' in val) and val and not '_index' in key and not '_sourceCategory' in key and not '_view' in key:
-            val = '"%s"' % val
         if isinstance(val, str):
             val = re.sub("[^\\\"](\")", "\\\"", val)
             if re.search("[\W\s]", val):# and not val.startswith('"') and not val.endswith('"'):  # or "\\" in node in [] or "/" in node:
